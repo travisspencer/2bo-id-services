@@ -1,4 +1,4 @@
-# Twobo Identity Model Services
+# Twobo SAML Authentication Context Module
 
 _An HTTP module for use with ADFS which adds Relying-Party-specific credential requirements to ADFS' SAML authentication requests_
 
