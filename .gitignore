@@ -1,0 +1,13 @@
+lib
+debug
+obj
+bin
+release
+_ReSharper.*
+*.ReSharper.user
+*.DotSettings
+*.suo
+*.user
+*.nupkg
+nuget.exe
+publish
