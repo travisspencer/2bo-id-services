@@ -34,11 +34,16 @@ namespace Twobo.IdentityModel.Services
 
             getRelyingPartyTrustCommand.Identifier = new[] { rpId };
 
+            string[] requiredCredentials = null;
             var results = getRelyingPartyTrustCommand.Invoke<RelyingPartyTrust>();
-            var rpt = results.First<RelyingPartyTrust>();
-            var notes = rpt.Notes;
+            var rpt = results.FirstOrDefault<RelyingPartyTrust>();
 
-            return notes.Split(',');   
+            if (rpt != null && !string.IsNullOrWhiteSpace(rpt.Notes))
+            {
+                requiredCredentials = rpt.Notes.Split(',');
+            }
+
+            return requiredCredentials;
         }
     }
 }

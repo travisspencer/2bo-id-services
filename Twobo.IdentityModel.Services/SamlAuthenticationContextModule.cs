@@ -35,6 +35,22 @@ namespace Twobo.IdentityModel.Services
     public class SamlAuthenticationContextModule : IHttpModule
     {
         private IRelyingPartySettingsProvider relyingPartySettingsProvider;
+        private IEnumerable<string> defaultRelyingPartyCredentials;
+        private string[] noRequiredCredentials = new string[0];
+
+        SamlAuthenticationContextModule()
+        {
+            var defaultRpCreds = ConfigurationManager.AppSettings["DefaultRelyingPartyCredentials"];
+
+            if (string.IsNullOrWhiteSpace(defaultRpCreds))
+            {
+                defaultRelyingPartyCredentials = noRequiredCredentials;
+            }
+            else
+            {
+                defaultRelyingPartyCredentials = defaultRpCreds.Split(',');
+            }
+        }
 
         public void Dispose() { }
 
@@ -45,7 +61,7 @@ namespace Twobo.IdentityModel.Services
 
         protected virtual IRelyingPartySettingsProvider RelyingPartySettingsProvider
         {
-            get 
+            get
             {
                 if (relyingPartySettingsProvider == null)
                 {
@@ -53,13 +69,13 @@ namespace Twobo.IdentityModel.Services
 
                     if (string.IsNullOrWhiteSpace(typeName))
                     {
-                        return new RelyingPartySettingsProvider();
+                        relyingPartySettingsProvider = new RelyingPartySettingsProvider();
                     }
                     else
                     {
                         var type = Type.GetType(typeName);
 
-                        return (IRelyingPartySettingsProvider)Activator.CreateInstance(type);
+                        relyingPartySettingsProvider = (IRelyingPartySettingsProvider)Activator.CreateInstance(type);
                     }
                 }
 
@@ -72,24 +88,35 @@ namespace Twobo.IdentityModel.Services
             var application = (HttpApplication)source;
             var context = application.Context;
 
-            if (!string.IsNullOrWhiteSpace(context.Response.RedirectLocation))
+            if (context.Response.StatusCode == 302 && !string.IsNullOrWhiteSpace(context.Response.RedirectLocation))
             {
                 var redirectLocation = new Uri(context.Response.RedirectLocation);
                 var query = HttpUtility.ParseQueryString(redirectLocation.Query);
+                var encodedAdfsSamlResponse = query["SAMLRequest"];
 
-                if (context.Response.StatusCode == 302 && !string.IsNullOrWhiteSpace(query["SAMLRequest"]))
+                if (!string.IsNullOrWhiteSpace(encodedAdfsSamlResponse))
                 {
                     var rpId = GetRelyingPartyId(context.Request);
+                    var rpCredentials = GetRequiredCredentialsForRelyingParty(context.Cache, rpId);
 
-                    if (!string.IsNullOrWhiteSpace(rpId))
+                    if (rpCredentials != null && rpCredentials.Count() > 0)
                     {
-                        var rpCredentials = GetRequiredCredentialsForRelyingParty(context.Cache, rpId);
+                        var decodedAdfsSamlResponse = DecodeSamlRedirectMessage(encodedAdfsSamlResponse);
+                        var samlDoc = new XmlDocument();
 
-                        if (rpCredentials != null && rpCredentials.Count() > 0)
+                        samlDoc.LoadXml(decodedAdfsSamlResponse);
+
+                        var requestedAuthnContextClassRefs = GetRequestedAuthenticationClassReferences(samlDoc);
+
+                        if (requestedAuthnContextClassRefs.Count == 0 || !requestedAuthnContextClassRefs.IsSubsetOf(rpCredentials))
                         {
+                            // No authN context specified or else some baddie RP asked for an authN context 
+                            // that isn't allowed for it. In the latter case, ignore the request and put in 
+                            // what's configured for the RP.
+
                             var newRedirectLocaitonBuilder = new UriBuilder(redirectLocation);
 
-                            query["SAMLRequest"] = AddAuthenticationContext(rpCredentials, query["SAMLRequest"]);
+                            query["SAMLRequest"] = AddAuthenticationContext(rpCredentials, samlDoc);
 
                             newRedirectLocaitonBuilder.Query = query.ToString();
 
@@ -100,21 +127,35 @@ namespace Twobo.IdentityModel.Services
             }
         }
 
-        private string AddAuthenticationContext(IEnumerable<string> rpCredentials, string originalEncodedSamlRequest)
+        private HashSet<string> GetRequestedAuthenticationClassReferences(XmlDocument samlXml)
         {
-            var decodedSamlMessage = DecodeSamlRedirectMessage(originalEncodedSamlRequest);
-            var doc = new XmlDocument();
+            var requestedAuthnContextClassRefs = new HashSet<string>();
+            var requestedAuthnContext = samlXml.DocumentElement["RequestedAuthnContext", "urn:oasis:names:tc:SAML:2.0:protocol"];
 
-            doc.LoadXml(decodedSamlMessage);
+            if (requestedAuthnContext != null)
+            {
+                var authnContextClassRefs = requestedAuthnContext.GetElementsByTagName("AuthnContextClassRef",
+                    "urn:oasis:names:tc:SAML:2.0:assertion");
 
-            var requestedAuthnContextElement = doc.CreateElement("RequestedAuthnContext", "urn:oasis:names:tc:SAML:2.0:protocol");
+                foreach (XmlNode authnContextClassRef in authnContextClassRefs)
+                {
+                    requestedAuthnContextClassRefs.Add(authnContextClassRef.InnerText);
+                }
+            }
+
+            return requestedAuthnContextClassRefs;
+        }
+
+        private string AddAuthenticationContext(IEnumerable<string> rpCredentials, XmlDocument samlXml)
+        {
+            var requestedAuthnContextElement = samlXml.CreateElement("RequestedAuthnContext", "urn:oasis:names:tc:SAML:2.0:protocol");
 
             // NOTE: Exact comparison of the authN context is the default and that's what 
             // we want, so it's not explicitly added.
 
             foreach (var credential in rpCredentials)
             {
-                var authnContextClassRefElement = doc.CreateElement("AuthnContextClassRef", "urn:oasis:names:tc:SAML:2.0:assertion");
+                var authnContextClassRefElement = samlXml.CreateElement("AuthnContextClassRef", "urn:oasis:names:tc:SAML:2.0:assertion");
 
                 authnContextClassRefElement.InnerText = credential;
 
@@ -124,15 +165,15 @@ namespace Twobo.IdentityModel.Services
             // NOTE: Where we insert the new request authN context element matters. The schema defines 
             // a sequence of child elements for the AuthnRequestType. They are Subject, NameIDPolicy, 
             // Conditions, RequestedAuthnContext, Scoping.
-            var scopingElement = doc.DocumentElement["Scoping", "urn:oasis:names:tc:SAML:2.0:protocol"];
+            var scopingElement = samlXml.DocumentElement["Scoping", "urn:oasis:names:tc:SAML:2.0:protocol"];
 
             if (scopingElement == null)
             {
-                doc.DocumentElement.AppendChild(requestedAuthnContextElement);
+                samlXml.DocumentElement.AppendChild(requestedAuthnContextElement);
             }
             else
             {
-                doc.DocumentElement.InsertBefore(scopingElement, requestedAuthnContextElement);
+                samlXml.DocumentElement.InsertBefore(scopingElement, requestedAuthnContextElement);
             }
 
             // Note: We're assuming the request wasn't signed, so we're not re-signing it. This is a safe assumping when 
@@ -140,22 +181,20 @@ namespace Twobo.IdentityModel.Services
             // or if this method were used when sending the authN request over the POST binding, we could re-sign it. 
             // Just a matter of code ;-)
 
-            if (doc.DocumentElement["Signature", "http://www.w3.org/2000/09/xmldsig#"] != null)
+            if (samlXml.DocumentElement["Signature", "http://www.w3.org/2000/09/xmldsig#"] != null)
             {
                 throw new NotImplementedException("Re-signing of an authentication request is not currently supported.");
             }
 
-            var updatedEncodedSamlMessage = EncodeSamlRedirectMessage(doc);
+            var updatedEncodedSamlMessage = EncodeSamlRedirectMessage(samlXml);
 
             return updatedEncodedSamlMessage;
         }
 
-        // NOTE: The implementation of this function is based on code from ForgeRock (licesed under the CDDLv1). See
-        // https://svn.forgerock.org/openam/branches/opensso_build9_branch/opensso/products/federation/library/csharpsource/Fedlet/Fedlet/source/Saml2/Saml2Utils.cs
         private string EncodeSamlRedirectMessage(XmlDocument unencodedSamlRequest)
         {
             var buffer = Encoding.UTF8.GetBytes(unencodedSamlRequest.OuterXml);
-            
+
             using (var memoryStream = new MemoryStream())
             using (var compressedStream = new DeflateStream(memoryStream, CompressionMode.Compress, true))
             {
@@ -169,7 +208,7 @@ namespace Twobo.IdentityModel.Services
                 memoryStream.Read(compressedBuffer, 0, compressedBuffer.Length);
 
                 return Convert.ToBase64String(compressedBuffer);
-            }            
+            }
         }
 
         private IEnumerable<string> GetRequiredCredentialsForRelyingParty(Cache cache, string rpId)
@@ -180,6 +219,13 @@ namespace Twobo.IdentityModel.Services
             if (rpCredentials == null)
             {
                 rpCredentials = RelyingPartySettingsProvider.GetRequiredCredentials(rpId);
+
+                if (rpCredentials == null || rpCredentials.Count() == 0 ||
+                    (rpCredentials.Count() == 1 && string.IsNullOrWhiteSpace(rpCredentials.First())))
+                {
+                    rpCredentials = defaultRelyingPartyCredentials;
+                }
+
                 cache[key] = rpCredentials;
             }
 
@@ -310,6 +356,6 @@ namespace Twobo.IdentityModel.Services
             }
 
             return id;
-        }        
+        }
     }
 }
