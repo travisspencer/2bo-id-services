@@ -72,25 +72,29 @@ namespace Twobo.IdentityModel.Services
             var application = (HttpApplication)source;
             var context = application.Context;
 
-            if (context.Response.StatusCode == 302)
+            if (!string.IsNullOrWhiteSpace(context.Response.RedirectLocation))
             {
-                var rpId = GetRelyingPartyId(context.Request);
+                var redirectLocation = new Uri(context.Response.RedirectLocation);
+                var query = HttpUtility.ParseQueryString(redirectLocation.Query);
 
-                if (!string.IsNullOrWhiteSpace(rpId))
+                if (context.Response.StatusCode == 302 && !string.IsNullOrWhiteSpace(query["SAMLRequest"]))
                 {
-                    var rpCredentials = GetRequiredCredentialsForRelyingParty(context.Cache, rpId);
+                    var rpId = GetRelyingPartyId(context.Request);
 
-                    if (rpCredentials != null && rpCredentials.Count() > 0)
+                    if (!string.IsNullOrWhiteSpace(rpId))
                     {
-                        var redirectLocation = new Uri(context.Response.RedirectLocation);
-                        var query = HttpUtility.ParseQueryString(redirectLocation.Query);
-                        var newRedirectLocaitonBuilder = new UriBuilder(redirectLocation);
+                        var rpCredentials = GetRequiredCredentialsForRelyingParty(context.Cache, rpId);
 
-                        query["SAMLRequest"] = AddAuthenticationContext(rpCredentials, query["SAMLRequest"]);
+                        if (rpCredentials != null && rpCredentials.Count() > 0)
+                        {
+                            var newRedirectLocaitonBuilder = new UriBuilder(redirectLocation);
 
-                        newRedirectLocaitonBuilder.Query = query.ToString();
+                            query["SAMLRequest"] = AddAuthenticationContext(rpCredentials, query["SAMLRequest"]);
 
-                        context.Response.RedirectLocation = newRedirectLocaitonBuilder.ToString();
+                            newRedirectLocaitonBuilder.Query = query.ToString();
+
+                            context.Response.RedirectLocation = newRedirectLocaitonBuilder.ToString();
+                        }
                     }
                 }
             }

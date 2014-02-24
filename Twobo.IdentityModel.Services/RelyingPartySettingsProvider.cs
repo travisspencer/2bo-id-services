@@ -19,6 +19,10 @@
  */
 
 using System.Collections.Generic;
+using System.Linq;
+
+using Microsoft.IdentityServer.PowerShell.Commands;
+using Microsoft.IdentityServer.PowerShell.Resources;
 
 namespace Twobo.IdentityModel.Services
 {
@@ -26,7 +30,15 @@ namespace Twobo.IdentityModel.Services
     {
         public IEnumerable<string> GetRequiredCredentials(string rpId)
         {
-            return new[] { "test", "test2" };
+            var getRelyingPartyTrustCommand = new GetRelyingPartyTrustCommand();
+
+            getRelyingPartyTrustCommand.Identifier = new[] { rpId };
+
+            var results = getRelyingPartyTrustCommand.Invoke<RelyingPartyTrust>();
+            var rpt = results.First<RelyingPartyTrust>();
+            var notes = rpt.Notes;
+
+            return notes.Split(',');   
         }
     }
 }
