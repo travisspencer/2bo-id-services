@@ -191,6 +191,8 @@ namespace Twobo.IdentityModel.Services
             return updatedEncodedSamlMessage;
         }
 
+        // NOTE: The implementation of this function is based on code from ForgeRock (licesed under the CDDLv1). See
+        // https://svn.forgerock.org/openam/branches/opensso_build9_branch/opensso/products/federation/library/csharpsource/Fedlet/Fedlet/source/Saml2/Saml2Utils.cs
         private string EncodeSamlRedirectMessage(XmlDocument unencodedSamlRequest)
         {
             var buffer = Encoding.UTF8.GetBytes(unencodedSamlRequest.OuterXml);
@@ -298,35 +300,13 @@ namespace Twobo.IdentityModel.Services
         private string GetRelyingPartyIdIfSamlPost(HttpRequest request)
         {
             string id = null;
-            var msisSamlRequestParam = request.Params["MSISSamlRequest"];
+            var encodedSamlRequest = request.Form["SAMLRequest"];
 
-            if (!string.IsNullOrWhiteSpace(msisSamlRequestParam))
+            if (!string.IsNullOrWhiteSpace(encodedSamlRequest))
             {
-                var encodedMsisSamlRequest = msisSamlRequestParam.Split(',').Last();
-                var decodedMsisSamlRequest = Encoding.UTF8.GetString(Convert.FromBase64String(encodedMsisSamlRequest));
-                var startIndex = decodedMsisSamlRequest.IndexOf("SAMLRequest=");
+                var decodedSamlRequest = Encoding.UTF8.GetString(Convert.FromBase64String(encodedSamlRequest));
 
-                if (startIndex != -1)
-                {
-                    startIndex += "SAMLRequest=".Length;
-
-                    string encodedSamlRequest;
-                    var endIndex = decodedMsisSamlRequest.IndexOf("\\", startIndex);
-
-                    if (endIndex == -1)
-                    {
-                        encodedSamlRequest = decodedMsisSamlRequest.Substring(startIndex);
-                    }
-                    else
-                    {
-                        encodedSamlRequest = decodedMsisSamlRequest.Substring(startIndex, endIndex - startIndex);
-                    }
-
-                    var decodedSamlRequest = Encoding.UTF8.GetString(Convert.FromBase64String(
-                        HttpUtility.UrlDecode(encodedSamlRequest)));
-
-                    id = GetRelyingPartyIdFromDecodedSamlRequest(decodedSamlRequest);
-                }
+                id = GetRelyingPartyIdFromDecodedSamlRequest(decodedSamlRequest);
             }
 
             return id;
