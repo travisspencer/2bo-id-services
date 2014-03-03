@@ -159,7 +159,7 @@ namespace Twobo.IdentityModel.Services
 
                 requestedAttributeElement.SetAttribute("Name", claim);
                 requestedAttributeElement.SetAttribute("FriendlyName", claim);
-                requestedAttributeElement.SetAttribute("isRequired", "true");
+                requestedAttributeElement.SetAttribute("isRequired", "false");
                 requestedAttributeElement.SetAttribute("NameFormat", "urn:oasis:names:tc:SAML:2.0:attrname-format:unspecified");
 
                 requestedAttributesElement.AppendChild(requestedAttributeElement);
