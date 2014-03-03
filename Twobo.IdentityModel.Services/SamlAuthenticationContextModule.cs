@@ -38,6 +38,13 @@ namespace Twobo.IdentityModel.Services
         private IEnumerable<string> defaultRelyingPartyCredentials;
         private string[] noRequiredCredentials = new string[0];
 
+        // The use of requested attribuets is non-standard, but there's a fair amount of people that are doing it.
+        // They all use the same method we're using here (i.e., piggy-backing on SAML metadata spec), but the
+        // the namespace of the element containing the requested attribuets elements varies in all of these bespoke
+        // implementations. So, configure as needed.
+        private static readonly string requestedAttributesElementNamespace = ConfigurationManager.AppSettings["RequestedAttributesElementNamespace"] ??
+            "http://claims.twobotechnologies.com/2014/03/requested_attributes";
+
         SamlAuthenticationContextModule()
         {
             var defaultRpCreds = ConfigurationManager.AppSettings["DefaultRelyingPartyCredentials"];
@@ -98,14 +105,15 @@ namespace Twobo.IdentityModel.Services
                 {
                     var rpId = GetRelyingPartyId(context.Request);
                     var rpCredentials = GetRequiredCredentialsForRelyingParty(context.Cache, rpId);
+                    var rpRequiredClaims = GetRequiredClaimsForRelyingParty(context.Cache, rpId);
+                    var samlDoc = new XmlDocument();
+                    var decodedAdfsSamlResponse = DecodeSamlRedirectMessage(encodedAdfsSamlResponse);
+                    var reEncode = false;
+
+                    samlDoc.LoadXml(decodedAdfsSamlResponse);
 
                     if (rpCredentials != null && rpCredentials.Count() > 0)
                     {
-                        var decodedAdfsSamlResponse = DecodeSamlRedirectMessage(encodedAdfsSamlResponse);
-                        var samlDoc = new XmlDocument();
-
-                        samlDoc.LoadXml(decodedAdfsSamlResponse);
-
                         var requestedAuthnContextClassRefs = GetRequestedAuthenticationClassReferences(samlDoc);
 
                         if (requestedAuthnContextClassRefs.Count == 0 || !requestedAuthnContextClassRefs.IsSubsetOf(rpCredentials))
@@ -113,18 +121,52 @@ namespace Twobo.IdentityModel.Services
                             // No authN context specified or else some baddie RP asked for an authN context 
                             // that isn't allowed for it. In the latter case, ignore the request and put in 
                             // what's configured for the RP.
+                            AddAuthenticationContext(rpCredentials, samlDoc);
 
-                            var newRedirectLocaitonBuilder = new UriBuilder(redirectLocation);
-
-                            query["SAMLRequest"] = AddAuthenticationContext(rpCredentials, samlDoc);
-
-                            newRedirectLocaitonBuilder.Query = query.ToString();
-
-                            context.Response.RedirectLocation = newRedirectLocaitonBuilder.ToString();
+                            reEncode = true;
                         }
+                    }
+
+                    if (rpRequiredClaims != null && rpRequiredClaims.Count() > 0)
+                    {
+                        AddRequiredClaims(rpRequiredClaims, samlDoc);
+
+                        reEncode = true;
+                    }
+
+                    if (reEncode)
+                    {
+                        var newRedirectLocaitonBuilder = new UriBuilder(redirectLocation);
+
+                        query["SAMLRequest"] = EncodeSamlRedirectMessage(samlDoc);
+
+                        newRedirectLocaitonBuilder.Query = query.ToString();
+
+                        context.Response.RedirectLocation = newRedirectLocaitonBuilder.ToString();
                     }
                 }
             }
+        }
+
+        private void AddRequiredClaims(IEnumerable<string> rpRequiredClaims, XmlDocument samlDoc)
+        {
+            var extensionsElement = samlDoc.CreateElement("Extensions", "urn:oasis:names:tc:SAML:2.0:protocol");
+            var requestedAttributesElement = samlDoc.CreateElement("RequestedAttributes", requestedAttributesElementNamespace);
+
+            foreach (var claim in rpRequiredClaims)
+            {
+                var requestedAttributeElement = samlDoc.CreateElement("RequestedAttribute", "urn:oasis:names:tc:SAML:2.0:metadata");
+
+                requestedAttributeElement.SetAttribute("Name", claim);
+                requestedAttributeElement.SetAttribute("FriendlyName", claim);
+                requestedAttributeElement.SetAttribute("isRequired", "true");
+                requestedAttributeElement.SetAttribute("NameFormat", "urn:oasis:names:tc:SAML:2.0:attrname-format:unspecified");
+
+                requestedAttributesElement.AppendChild(requestedAttributeElement);
+            }
+
+            extensionsElement.AppendChild(requestedAttributesElement);
+            samlDoc.DocumentElement.AppendChild(extensionsElement);
         }
 
         private HashSet<string> GetRequestedAuthenticationClassReferences(XmlDocument samlXml)
@@ -146,16 +188,16 @@ namespace Twobo.IdentityModel.Services
             return requestedAuthnContextClassRefs;
         }
 
-        private string AddAuthenticationContext(IEnumerable<string> rpCredentials, XmlDocument samlXml)
+        private void AddAuthenticationContext(IEnumerable<string> rpCredentials, XmlDocument samlDoc)
         {
-            var requestedAuthnContextElement = samlXml.CreateElement("RequestedAuthnContext", "urn:oasis:names:tc:SAML:2.0:protocol");
+            var requestedAuthnContextElement = samlDoc.CreateElement("RequestedAuthnContext", "urn:oasis:names:tc:SAML:2.0:protocol");
 
             // NOTE: Exact comparison of the authN context is the default and that's what 
             // we want, so it's not explicitly added.
 
             foreach (var credential in rpCredentials)
             {
-                var authnContextClassRefElement = samlXml.CreateElement("AuthnContextClassRef", "urn:oasis:names:tc:SAML:2.0:assertion");
+                var authnContextClassRefElement = samlDoc.CreateElement("AuthnContextClassRef", "urn:oasis:names:tc:SAML:2.0:assertion");
 
                 authnContextClassRefElement.InnerText = credential;
 
@@ -165,15 +207,15 @@ namespace Twobo.IdentityModel.Services
             // NOTE: Where we insert the new request authN context element matters. The schema defines 
             // a sequence of child elements for the AuthnRequestType. They are Subject, NameIDPolicy, 
             // Conditions, RequestedAuthnContext, Scoping.
-            var scopingElement = samlXml.DocumentElement["Scoping", "urn:oasis:names:tc:SAML:2.0:protocol"];
+            var scopingElement = samlDoc.DocumentElement["Scoping", "urn:oasis:names:tc:SAML:2.0:protocol"];
 
             if (scopingElement == null)
             {
-                samlXml.DocumentElement.AppendChild(requestedAuthnContextElement);
+                samlDoc.DocumentElement.AppendChild(requestedAuthnContextElement);
             }
             else
             {
-                samlXml.DocumentElement.InsertBefore(scopingElement, requestedAuthnContextElement);
+                samlDoc.DocumentElement.InsertBefore(scopingElement, requestedAuthnContextElement);
             }
 
             // Note: We're assuming the request wasn't signed, so we're not re-signing it. This is a safe assumping when 
@@ -181,14 +223,10 @@ namespace Twobo.IdentityModel.Services
             // or if this method were used when sending the authN request over the POST binding, we could re-sign it. 
             // Just a matter of code ;-)
 
-            if (samlXml.DocumentElement["Signature", "http://www.w3.org/2000/09/xmldsig#"] != null)
+            if (samlDoc.DocumentElement["Signature", "http://www.w3.org/2000/09/xmldsig#"] != null)
             {
                 throw new NotImplementedException("Re-signing of an authentication request is not currently supported.");
             }
-
-            var updatedEncodedSamlMessage = EncodeSamlRedirectMessage(samlXml);
-
-            return updatedEncodedSamlMessage;
         }
 
         // NOTE: The implementation of this function is based on code from ForgeRock (licesed under the CDDLv1). See
@@ -234,6 +272,21 @@ namespace Twobo.IdentityModel.Services
             return rpCredentials;
         }
 
+        private IEnumerable<string> GetRequiredClaimsForRelyingParty(Cache cache, string rpId)
+        {
+            var key = rpId + "_Claims";
+            var rpClaims = cache[key] as IEnumerable<string>;
+
+            if (rpClaims == null)
+            {
+                rpClaims = RelyingPartySettingsProvider.GetRequiredClaims(rpId);
+
+                cache[key] = rpClaims ?? new string[0]; // Short circuit cache if no required claims
+            }
+
+            return rpClaims;
+        }
+
         private string GetRelyingPartyId(HttpRequest request)
         {
             var id = GetRelyingPartyIdIfWSFederation(request);
@@ -269,9 +322,9 @@ namespace Twobo.IdentityModel.Services
 
             if (!string.IsNullOrWhiteSpace(encodedSamlRequest))
             {
-                var decodedSamlMessage = DecodeSamlRedirectMessage(encodedSamlRequest);
+                var decodedSamlRequest = DecodeSamlRedirectMessage(encodedSamlRequest);
 
-                id = GetRelyingPartyIdFromDecodedSamlRequest(decodedSamlMessage);
+                id = GetRelyingPartyIdFromDecodedSamlRequest(decodedSamlRequest);
             }
 
             return id;

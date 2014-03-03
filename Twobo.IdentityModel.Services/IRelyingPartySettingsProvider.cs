@@ -24,6 +24,7 @@ namespace Twobo.IdentityModel.Services
 {
     public interface IRelyingPartySettingsProvider
     {
+        IEnumerable<string> GetRequiredClaims(string rpId);
         IEnumerable<string> GetRequiredCredentials(string rpId);
     }
 }
