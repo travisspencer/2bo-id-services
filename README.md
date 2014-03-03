@@ -18,12 +18,8 @@ When the HTTP module sees that ADFS is redirecting the end user, it is checks th
 
 1. Checking for a `wtrealm` in the query string. This is the case when the downstream RP is using WS-Federation to integrate with ADFS.
 2. Checking for a `SAMLRequest` in the query string. This is the case when the downstream SP is using the SAML redirect binding to communicate with ADFS.
-3. Check the `MSISSamlRequest` slot of the request object's `Params` dictionary. If this is not null, it is because ADFS has placed into it a SAML authentication request send from a downstream SP using the POST binding.
+3. Check for a `SAMLRequest` slot of the request object's `Params` dictionary. If this is not null, it is because ADFS has placed into it a SAML authentication request send from a downstream SP using the POST binding.
 
-If the RP ID can be found, the settings provider is quired for the required credentials that subjects should use when authenticating to the upstream IdP. 
-
-> NOTE: The incoming request is not checked to see if it contains any information about the required authentication and if that is in the list provided. It should, but that's for another day.
-
-If it returns one or more required credentials, the redirect location set by ADFS is interrogated. This contains the SAML authentication request that ADFS has created. This has a lot of important information, such as the assertion ID, that must not be altered. This SAML authentication request is not signed, however, so we can change some parts of it. The credentials provided by the plug-in are then inserted into this request as `AuthnContextClassRef`elements. After this, the altered message is re-encoded and put into the `RedirectLocation` of the response. Consequently, ADFS will send it on to the upsteam IdP. When ADFS receives the response, it will handle it as if the alteration never took place.
+If the RP ID can be found, the settings provider is quired for the required credentials that subjects should use when authenticating to the upstream IdP. If it returns one or more required credentials, the redirect location set by ADFS is interrogated. This contains the SAML authentication request that ADFS has created. This has a lot of important information, such as the assertion ID, that must not be altered. This SAML authentication request is not signed, however, so we can change some parts of it. The credentials provided by the plug-in are then inserted into this request as `AuthnContextClassRef`elements. After this, the altered message is re-encoded and put into the `RedirectLocation` of the response. Consequently, ADFS will send it on to the upsteam IdP. When ADFS receives the response, it will handle it as if the alteration never took place.
 
 If you have questions, issues or need more info, open an ticket or send a pull request.
